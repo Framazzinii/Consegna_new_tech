@@ -1,0 +1,139 @@
+\documentclass[10pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2cm, top=1.8cm, bottom=1.8cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{multicol}
+
+\setlength{\parskip}{3pt plus 1pt}
+\setlength{\parindent}{0pt}
+
+\definecolor{polimi}{RGB}{26,58,92}
+
+\titleformat{\section}{\normalsize\bfseries\color{polimi}}{}{0em}{}[\vspace{-0.5em}{\color{polimi}\rule{\linewidth}{0.3pt}}]
+\titlespacing*{\section}{0pt}{6pt}{2pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\footnotesize\thepage\ / \pageref{LastPage}}
+
+\begin{document}
+
+% ═══════════════════════════════
+% COVER PAGE
+% ═══════════════════════════════
+\thispagestyle{empty}
+\begin{center}
+
+\vspace*{1cm}
+\includegraphics[width=0.55\textwidth]{../Loghi gsom/PHOTO-2026-05-26-18-27-07 2.jpg}
+
+\vspace{1.8cm}
+{\large\bfseries\color{polimi} New Technologies for Finance}\\[0.4cm]
+{\normalsize May 2025}
+
+\vspace{2.5cm}
+{\LARGE\bfseries\color{polimi} Early-Warning System for Risk-Off Regimes\\[0.3cm] with Domain-Specific Allocation Routing}
+
+\vspace{0.6cm}
+{\large Unsupervised Anomaly Detection for Regime-Aware Portfolio Allocation}
+
+\vspace{3cm}
+{\large\bfseries
+Edoardo Ercelli \quad Luca Galli \quad Francesco Impenati \quad Francesco Mazzini}
+
+\vspace{1.5cm}
+{\normalsize Politecnico di Milano --- Graduate School of Management}
+
+\end{center}
+\newpage
+
+% ═══════════════════════════════
+% ABSTRACT BODY (2 pages)
+% ═══════════════════════════════
+
+\section{Problem \& Objective}
+
+Traditional EWS treat risk-off as binary (equity vs.\ cash), ignoring crisis heterogeneity: in 2008 the USD strengthened (dollar funding squeeze); in inflationary regimes, gold outperforms. We build an EWS that answers \textit{when} to go risk-off (ensemble anomaly detection) and \textit{where} to allocate (macro-based routing: Cash USD / Gold / MBS). The strategy deploys \textbf{1.5$\times$ equity leverage} in calm periods and relies on early detection to avoid drawdowns, maximizing the Sharpe ratio.
+
+\section{Data \& Features}
+
+Bloomberg weekly data, 2000--2021, 1{,}111 observations, 43 features (7 MSCI equity, 3 FX, 4 commodities, 8 bond TR, 18 yields, VIX, ECSURPUS). Target $Y{=}1$: risk-off week (21.3\% prevalence). No missing values. Proxies: MSCI World$\to$MXUS; Global Agg$\to$LUACTRUU; credit spreads as log price-index ratios.
+
+Features are made stationary (log-returns for prices, first differences for yields; 42/42 pass ADF at 5\%). We construct 20 cross-asset spreads (term, credit, VRP, equity-bond rotation, gold-oil, JPY strength) and remove 7 collinear features ($|\rho|{>}0.9$), yielding \textbf{56 clean features}. Additionally, 14 routing triggers span three macro domains.
+
+\section{Validation: Walk-Forward CV with Embargo}
+
+Purged expanding walk-forward, 5 folds, \textbf{4-week embargo} between train and validation (eliminates leakage from $\Delta_{4w}$ lookbacks). Development$\leq$2018; test holdout 2019--2021 (sealed, contains COVID). Folds 1--2 have 53/64 positives (GFC, Euro Debt); folds 3--5 only 2/10/6 (low-vol 2013--18 regime). All metrics \textbf{weighted by $n_{\text{pos}}$}. Scaler fit only on each fold's train; AE early-stopping on temporal sub-split of train only.
+
+\section{Anomaly Detection Models \& Ensemble}
+
+Four novelty detectors trained on $Y{=}0$ weeks only:
+\begin{itemize}[nosep, leftmargin=1.2em, itemsep=1pt]
+  \item \textbf{MVG:} Mahalanobis distance, Ledoit-Wolf shrinkage (mandatory: 56 features, $\sim$360 normals).
+  \item \textbf{One-Class SVM (RBF):} Grid $\nu{\times}\gamma$; best $\nu{=}0.05$, $\gamma{=}0.001$.
+  \item \textbf{Autoencoder:} $56{\to}24{\to}12{\to}6{\to}12{\to}24{\to}56$, dropout 0.15, early stopping on train sub-split.
+  \item \textbf{Isolation Forest:} 200 trees, contamination$=$0.10.
+\end{itemize}
+
+Scores are percentile-mapped against train-normals distributions for comparability, then combined via soft mean voting. The \textbf{soft mean ensemble achieves F1$=$0.650} on the test holdout, outperforming the best single model (SVM, 0.615). Mean pairwise error correlation$=$0.66 confirms diverse error patterns.
+
+\vspace{-2pt}
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+& \textbf{F1} & \textbf{AUC-ROC} & \textbf{AUC-PR} & \textbf{Prec} & \textbf{Rec} & \textbf{F2}\\
+\midrule
+MVG & 0.516 & 0.886 & 0.770 & 1.000 & 0.348 & 0.400\\
+SVM & 0.615 & 0.851 & 0.732 & 0.750 & 0.522 & 0.556\\
+IF & 0.583 & 0.810 & 0.680 & 0.560 & 0.609 & 0.598\\
+AE & 0.516 & 0.873 & 0.764 & 1.000 & 0.348 & 0.400\\
+\textbf{Soft Mean Ens.} & \textbf{0.650} & 0.859 & 0.742 & 0.765 & 0.565 & 0.596\\
+\bottomrule
+\end{tabular}
+\end{table}
+\vspace{-6pt}
+
+\section{Routing Engine}
+
+When the ensemble signals risk-off, three domain sub-scores determine allocation. \textbf{USD sub-score}: mean of signed z-scores from funding stress (+1), DXY (+1), VRP (+1), Treasury flight ($-$1), US relative (+1)---dollar as safe haven during global, non-US stress (Avdjiev et al.\ 2019). \textbf{Gold sub-score}: real yield ($-$1), DXY ($-$1, opposite sign), JPY (+1), equity-bond $\rho$ (+1), gold-oil (+1)---gold when stress is monetary/inflationary or USD is weak (Baur \& Lucey 2010). \textbf{MBS}: binary rule-based (VIX$\in$[20,28], positive term spread, moderate drawdown), blocked if VIX$>$30 or acute funding stress---defensive carry only. All $\mu,\sigma$ from development set only. Priority: USD$\to$Gold$\to$MBS$\to$Cash (default). Thresholds optimized via Calmar-ratio grid search on CV folds.
+
+\section{Backtest Results (1.5$\times$ Leverage)}
+
+Tested on sealed 2019--2021 holdout with differentiated transaction costs (equity 5bps, cash 2bps, gold 8bps, MBS 20bps):
+
+\vspace{-2pt}
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lccc}
+\toprule
+& \textbf{EWS Strategy} & \textbf{60/40} & \textbf{Buy \& Hold}\\
+\midrule
+CAGR & \textbf{35.2\%} & 18.1\% & 24.2\%\\
+Sharpe & \textbf{1.93} & 1.44 & 1.38\\
+Max Drawdown & \textbf{$-$12.1\%} & $-$21.5\% & $-$27.7\%\\
+Calmar & \textbf{2.92} & 0.84 & 0.87\\
+Turnover & 3.9/yr & --- & ---\\
+\bottomrule
+\end{tabular}
+\end{table}
+\vspace{-6pt}
+
+\textbf{Allocation:} 103 weeks levered equity (85.8\%), 8 gold (6.7\%), 8 cash (6.7\%), 1 MBS (0.8\%). During the COVID crash (Feb--Apr 2020), USD triggers fired first (funding stress, DXY rally, VRP spike); the system routed to cash and gold, with MBS correctly blocked (VIX$>$30). During recovery (Apr--Dec 2020), allocations returned to 1.5$\times$ equity, capturing the rebound.
+
+\section{Limitations}
+
+Test holdout spans only 120 weeks with 9 regime switches---not yet statistically robust. Folds 3--5 are thin (2--10 positives). Proxies (MXUS$\neq$MSCI World, log-ratios$\neq$OAS) and weekly frequency limit applicability. The 2022 rate-shock regime is absent. At 1.5$\times$ leverage, the 35\% recall gap is a genuine concern.
+
+\end{document}
