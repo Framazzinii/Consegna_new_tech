@@ -1,0 +1,14 @@
+pandas
+numpy
+openpyxl
+pyarrow
+scikit-learn
+tensorflow
+scipy
+statsmodels
+matplotlib
+seaborn
+jupyter
+nbformat
+nbconvert
+joblib
