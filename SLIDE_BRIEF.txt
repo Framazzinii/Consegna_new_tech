@@ -1,0 +1,479 @@
+================================================================================
+BRIEF COMPLETO PER LA CREAZIONE DELLE SLIDE — EWS RISK-OFF + ALLOCATION ROUTING
+================================================================================
+
+Questo documento contiene TUTTO quello che serve per costruire 15 slide per una
+presentazione accademica (corso "New Technologies for Finance", PoliMi GSoM).
+Le figure sono nella cartella slide_assets/ (14 PNG ad alta risoluzione).
+I loghi PoliMi sono nella cartella "Loghi gsom/" (2 JPG).
+
+Struttura richiesta dal professore: PRESENTATION → BUSINESS LOGIC → PROCESS & EXECUTION
+Lingua: inglese.
+Formato: 16:9 widescreen.
+Nomi (ordine alfabetico): Edoardo Ercelli, Luca Galli, Francesco Impenati, Francesco Mazzini.
+Logo circolare PoliMi GSoM in un angolo di ogni slide (tranne la cover).
+Logo rettangolare grande nella cover.
+
+Le slide devono essere DENSE di contenuto (testo + figure + tabelle), NON minimaliste.
+Devono trasmettere competenza accademica e giustificare ogni scelta con razionale
+macroeconomico o statistico. Il tono è quello di un paper presentation, non di un pitch
+commerciale.
+
+================================================================================
+IL PROGETTO IN SINTESI
+================================================================================
+
+Abbiamo costruito un Early-Warning System (EWS) che:
+1. RILEVA settimane risk-off usando un ensemble di 4 modelli di anomaly detection
+   unsupervised, trainati SOLO su settimane normali (Y=0)
+2. DECIDE DOVE allocare quando scatta il risk-off, usando un routing engine basato
+   su 3 domini macroeconomici (USD, Gold, MBS)
+3. USA LEVA 1.5x sull'equity durante i periodi calm per massimizzare il rendimento,
+   e il sistema di detection per uscire in tempo prima dei drawdown
+
+La tesi di investimento è: leva + early warning = Sharpe ratio superiore.
+Il rischio della leva è giustificato SOLO se il sistema ha recall sufficiente.
+
+================================================================================
+DATASET
+================================================================================
+
+- Fonte: Bloomberg weekly
+- Periodo: 2000-01-11 → 2021-04-20 (1,111 osservazioni settimanali)
+- 43 features:
+  - 7 MSCI equity (MXUS, MXEU, MXJP, MXBR, MXRU, MXIN, MXCN)
+  - 3 FX (DXY, GBP, JPY)
+  - 4 commodities (Gold/XAUBGNL, WTI/Cl1, CRB/CRY, Baltic Dry/BDIY)
+  - 8 bond total-return indices (US, EU, UK, EM, HY, IG, MBS, Inflation-linked)
+  - 18 sovereign yields (US, DE, GB, IT, JP a varie scadenze)
+  - VIX, US Economic Surprise Index (ECSURPUS)
+- Target Y=1: settimana risk-off
+  - Prevalenza: 21.3% (237 su 1,111)
+  - Cluster: 2000-02, 2008-09, 2011-12, 2020
+  - Anni con ZERO risk-off: 2004, 2005, 2013, 2017, 2019
+- Missing values: ZERO (dataset completamente pulito)
+
+PROXY IMPORTANTI (mantenute coerenti ovunque):
+- MSCI World NON è nel dataset → proxied da MXUS (single name)
+  (TRANNE in usa_world_relative dove usiamo media DM di MXUS/MXEU/MXJP)
+- Bloomberg Global Aggregate NON è nel dataset → proxied da LUACTRUU (US IG Corporate TR)
+- Credit spreads: NON abbiamo yield OAS, solo total-return indices.
+  Li costruiamo come log(safe) - log(risky) = log price-index ratios.
+  Salire = risky underperforma = risk-off.
+
+FIGURA DA USARE: fig_y_distribution.png (bar chart Y=1 per anno)
+FIGURA DA USARE: fig_key_features.png (VIX, US 10Y, DXY, MXUS con shading risk-off)
+
+================================================================================
+FEATURE ENGINEERING (Prompt 2-3)
+================================================================================
+
+STATIONARITY:
+- Log-returns np.log(x).diff() per: tutti i prezzi (equity, FX, commodities, bond TR)
+- First differences x.diff() per: tutti i yield e i tassi
+- Level (passthrough) per: VIX, ECSURPUS, Y
+- Risultato: 42/42 features passano ADF al 5% (tutte stazionarie)
+- Motivazione: i modelli di anomaly detection assumono distribuzione stabile.
+  Features non stazionarie violano questa ipotesi fondamentale.
+
+20 SPREAD COSTRUITI:
+- Term spreads: US 10Y-3M, US 10Y-2Y, DE 10Y-2Y, BTP-Bund (GTITL10YR-GTDEM10Y), US-DE 10Y
+- Credit/EM (log price ratios): HY spread, HY-IG spread, EM spread
+- Equity-bond rotation: R4w(MXUS) - R4w(LUACTRUU)
+- Gold-oil ratio: XAUBGNL/Cl1 (flight-to-quality vs growth)
+- VRP (Variance Risk Premium): VIX - realized_vol_4w(MXUS)*sqrt(52)*100
+- JPY strength: -Δ4w log(JPY) (yen strengthening = risk-off)
+- Ogni spread ha livello + variazione 4 settimane (_chg4w)
+
+COLLINEARITY CLEANUP:
+- 7 features rimosse con |correlazione| > 0.9
+- Coppie e scelta del survivor:
+  - hy_spread rimosso → teniamo hy_ig_spread
+  - us_term_10y_3m rimosso → teniamo us_term_10y_2y
+  - GTGBP20Y rimosso → teniamo GTGBP30Y
+  - GTDEM30Y rimosso → teniamo GTDEM10Y
+  - USGG30YR rimosso → teniamo GT10
+- RISULTATO FINALE: 56 features clean
+
+FIGURA DA USARE: fig_correlation.png (heatmap correlazione completa features+spreads)
+FIGURA DA USARE: fig_routing_corr.png (heatmap correlazione routing triggers per dominio)
+
+================================================================================
+14 ROUTING TRIGGERS (3 DOMINI)
+================================================================================
+
+Costruiti dal raw data per il routing engine. Dominio → trigger:
+
+USD DOMAIN (5 trigger) — dollaro come safe haven:
+  1. libor_3m_spread_chg4w = (US0001M - USGG3M).diff(4) → funding stress
+  2. dxy_chg4w = log(DXY).diff(4) → momentum dollaro
+  3. vrp = VIX - annualized_realized_vol_4w(MXUS) → paura forward
+  4. us_10y_diff_chg4w = GT10.diff().diff(4) → Treasury flight (bull flattening)
+  5. usa_world_relative = log(MXUS).diff(4) - mean(log[MXUS,MXEU,MXJP].diff(4))
+
+GOLD DOMAIN (5 trigger) — oro come safe haven:
+  1. real_yield_proxy_chg4w = (GT10 - log(LF94TRUU).diff(4)).diff(4) → tassi reali
+  2. dxy_chg4w (STESSO indicatore del USD, ma con segno OPPOSTO nel sub-score)
+  3. jpy_strength = -log(JPY).diff(4) → yen come safe haven asiatico
+  4. equity_bond_corr_13w = rolling 13w correlation(MXUS, LUACTRUU) → diversification failure
+  5. gold_oil_ratio_chg4w = gold_oil_ratio.diff(4) → flight-to-quality vs growth
+
+MBS DOMAIN (5 trigger) — carry difensivo:
+  1. vix_level = VIX → nervosismo (usato come rule-based, non z-score)
+  2. us_10y_vol_4w = GT10.diff().rolling(4).std() → volatilità tassi
+  3. us_term_10y_2y_level = GT10 - USGG2YR → pendenza curva
+  4. libor_3m_spread_level = US0001M - USGG3M → funding
+  5. mxus_drawdown_52w = MXUS / MXUS.rolling(52).max() - 1 → drawdown
+
+NOTA CRITICA: dxy_chg4w appare in ENTRAMBI i domini USD e Gold.
+Nel USD sub-score ha segno +1 (dollaro forte = bullish USD).
+Nel Gold sub-score ha segno -1 (dollaro debole = bullish gold).
+Stessa feature, lettura economica opposta. È intenzionale e coerente.
+
+ADF sugli 11 trigger continui (esclusi i 4 rule-based): 10/10 stazionari al 5%.
+Correlazione alta intra-dominio: vix_level ~ mxus_drawdown_52w = -0.83 (atteso: VIX sale quando equity scende).
+
+================================================================================
+WALK-FORWARD CROSS-VALIDATION (Prompt 4.1)
+================================================================================
+
+DESIGN:
+- Expanding window: il train parte SEMPRE dall'inizio del dataset e cresce
+- 4-week EMBARGO: droppiamo 4 osservazioni tra fine train e inizio val
+  → elimina COMPLETAMENTE il leakage dai lookback a 4 settimane
+  (tutti i Δ4w, rolling windows, EWMA warm-up)
+- Development set: tutto ≤ 2018-12-31
+- Test holdout: 2019-01 → 2021-04 (121 settimane, SIGILLATO, contiene COVID)
+  → MAI toccato durante selezione modelli o tuning soglie
+
+5 FOLD CON CRISI NEL VAL:
+  Fold 1: train fino 2006, val 2007-2009, GFC 2008       → 360 train, 152 val, 53 positivi (34.9%)
+  Fold 2: train fino 2009, val 2010-2012, Euro Debt 2011  → 517 train, 151 val, 63 positivi (41.7%)
+  Fold 3: train fino 2012, val 2013-2014, Taper 2013      → 673 train, 100 val, 2 positivi (2.0%) ⚠
+  Fold 4: train fino 2014, val 2015-2016, China-Oil        → 778 train, 99 val, 10 positivi (10.1%)
+  Fold 5: train fino 2016, val 2017-2018, Q4 2018 Selloff → 882 train, 99 val, 6 positivi (6.1%) ⚠
+
+PERCHÉ FOLD 3-5 HANNO POCHI POSITIVI:
+Il periodo 2013-2018 è un regime strutturalmente a bassa volatilità.
+Questo è una PROPRIETÀ DEI DATI, non un errore di design.
+I fold da 3 anni ciascuno sono scelti per catturare crisi note nei val window.
+Ma nel 2013-2018 di crisi vere ce ne sono poche.
+
+SOLUZIONE: WEIGHTED BY n_pos
+Tutte le metriche CV sono aggregate pesando per il numero di positivi nel fold.
+Così fold 1-2 (53+64 = 117 positivi) DOMINANO le decisioni.
+Fold 3-5 (2+10+6 = 18 positivi) contribuiscono marginalmente.
+Senza questo weighting, fold 3 con 2 positivi avrebbe lo stesso peso di fold 1 con 53.
+
+SCALER DISCIPLINE (fonte #1 di leakage silenzioso):
+- StandardScaler fittato SOLO sul train di ogni fold
+- Per il test holdout: scaler fittato sull'intero development set
+- L'autoencoder fa early stopping su un sub-split TEMPORALE (85/15) del train normals
+  → MAI sul validation fold (quello sarebbe leakage)
+
+================================================================================
+4 MODELLI DI ANOMALY DETECTION (Prompt 5-6)
+================================================================================
+
+PARADIGMA: Novelty detection.
+I modelli vedono SOLO settimane normali (Y=0) durante il training.
+Non sanno com'è fatto un risk-off.
+Imparano la distribuzione del "normale" e flaggano come anomalo tutto ciò che è diverso.
+Score alto = più anomalo = più risk-off.
+
+1. MVG (Multivariate Gaussian) — Ledoit-Wolf:
+   - Stima μ e Σ sui train normals
+   - Score = distanza di Mahalanobis al quadrato: d²(x) = (x-μ)ᵀ Σ⁻¹ (x-μ)
+   - LEDOIT-WOLF SHRINKAGE OBBLIGATORIO:
+     Con 56 features e ~360 normals nel fold 1, la matrice di covarianza campionaria
+     è quasi singolare (p/n ≈ 0.15, alto). Ledoit-Wolf calcola la combinazione convessa
+     ottimale Σ* = (1-α)Σ + α·(tr(Σ)/p)·I che minimizza la loss attesa sotto norma
+     di Frobenius, producendo uno stimatore ben condizionato.
+   - Risultato test: F1=0.516, AUC-ROC=0.886, Precision=1.000, Recall=0.348
+   - Interpretazione: quando dice risk-off ha SEMPRE ragione (prec=1), ma ne becca solo 1 su 3
+
+2. One-Class SVM (RBF kernel):
+   - Mappa i normals in uno spazio ad alta dimensionalità via kernel RBF
+   - Trova la più piccola ipersfera che li contiene
+   - Score = -decision_function (più alto = più anomalo)
+   - Grid search: ν ∈ {0.05, 0.10, 0.15, 0.22} × γ ∈ {scale, auto, 0.01, 0.001}
+   - Migliore: ν=0.05, γ=0.001 (selezionato per weighted F1)
+   - Risultato test: F1=0.615, AUC-ROC=0.851, Precision=0.750, Recall=0.522
+   - MIGLIORE modello singolo per F1 (bilanciato tra precisione e recall)
+
+3. Autoencoder:
+   - Architettura simmetrica: 56 → 24 → 12 → 6 → 12 → 24 → 56
+   - ReLU, dropout 0.15, Adam lr=1e-3, MSE loss
+   - Score = MSE di ricostruzione per sample
+   - Early stopping su sub-split temporale 85/15 dei train normals
+     (CRITICO: il val fold del CV NON si tocca per early stopping)
+   - TensorFlow seed=42 per riproducibilità
+   - Risultato test: F1=0.516, AUC-ROC=0.873, Precision=1.000, Recall=0.348
+
+4. Isolation Forest:
+   - 200 alberi, partizionamento random
+   - Le anomalie vengono isolate in meno split (path più corto)
+   - Score = -decision_function
+   - Grid contamination ∈ {0.05, 0.10, 0.15, 0.22}, migliore: 0.10
+   - Soglia poi fine-tunata via walk-forward
+   - Risultato test: F1=0.583, AUC-ROC=0.810, Precision=0.560, Recall=0.609
+   - MIGLIORE recall singolo (61%) — cattura più crisi ma con più falsi allarmi
+
+TUNING SOGLIE:
+Per ogni modello, la soglia che converte lo score continuo in predizione binaria
+(anomalo/normale) è tunata via walk-forward pesato per n_pos.
+Si provano percentili dello score distribution e si sceglie quello che massimizza
+la weighted F1 sui fold di validazione.
+
+FIGURA DA USARE: fig_mvg_scores.png (distribuzione score MVG normal vs risk-off con soglia)
+FIGURA DA USARE: fig_ae_training.png (curve di training dell'autoencoder)
+FIGURA DA USARE: fig_model_comparison.png (bar chart metriche tutti i modelli)
+
+================================================================================
+ENSEMBLE (Prompt 7)
+================================================================================
+
+PROBLEMA: gli score dei 4 modelli sono su scale completamente diverse.
+- MVG: distanze di Mahalanobis (centinaia)
+- SVM: decision function (attorno a 0)
+- AE: MSE ricostruzione (ordine 1-10)
+- IF: decision function (attorno a 0)
+
+SOLUZIONE: PERCENTILE MAPPING
+Per ogni modello, trasformiamo lo score grezzo nel suo percentile empirico
+rispetto alla distribuzione dei train normals:
+  p = F_train(s) = #{train_normals con score ≤ s} / n_train_normals
+Ora tutti gli score sono in [0,1] con semantica confrontabile.
+
+3 VARIANTI ENSEMBLE:
+1. Hard voting: ogni modello flagga 0/1 con la sua soglia ottimale.
+   Maggioranza ≥3 su 4 vince. F1 test = 0.516
+2. Soft voting mean: media dei percentili. Soglia τ tunata su CV.
+   F1 test = 0.650 ← VINCITORE
+3. Soft voting median: mediana dei percentili (robusta a un modello impazzito).
+   F1 test = 0.619
+
+RISULTATI COMPLETI TEST HOLDOUT:
+                    F1     AUC-ROC  AUC-PR   Prec    Recall  F2
+MVG                0.516   0.886    0.770    1.000   0.348   0.400
+SVM                0.615   0.851    0.732    0.750   0.522   0.556
+IF                 0.583   0.810    0.680    0.560   0.609   0.598
+AE                 0.516   0.873    0.764    1.000   0.348   0.400
+Hard Vote          0.516   0.859    0.742    1.000   0.348   0.400
+Soft Mean          0.650   0.859    0.742    0.765   0.565   0.596
+Soft Median        0.619   0.869    0.759    0.684   0.565   0.586
+
+ERROR CORRELATION ANALYSIS:
+Matrice 4×4 delle correlazioni degli errori binari tra modelli:
+  MVG~SVM=0.695, MVG~IF=0.439, MVG~AE=1.000, SVM~IF=0.710, SVM~AE=0.695, IF~AE=0.439
+  Media pairwise = 0.663
+  SOTTO 0.85 → l'ensemble aggiunge valore genuino, i modelli sbagliano diversamente
+  Nota: MVG e AE hanno correlazione errori=1.0 (stessa precision/recall → stesse predizioni)
+
+F2 (beta=2): pesa il recall il DOPPIO della precision.
+Nel nostro contesto di portfolio management con leva 1.5x, MANCARE una crisi costa
+molto di più di un falso allarme (che al massimo ti mette in cash per una settimana).
+
+FIGURA DA USARE: fig_error_corr.png (heatmap 4×4 error correlation)
+FIGURA DA USARE: fig_ensemble_timeline.png (score ensemble + predizioni vs realtà nel tempo)
+
+================================================================================
+ROUTING ENGINE (Prompt 8-9)
+================================================================================
+
+LOGICA: quando l'ensemble dice risk-off, DOVE allocare?
+
+SUB-SCORE USD (media di signed z-scores, μ/σ dal development set):
+  libor_3m_spread_chg4w: +1 (funding stress → dollaro forte)
+  dxy_chg4w: +1 (dollaro in salita)
+  vrp: +1 (paura implicita > realizzata)
+  us_10y_diff_chg4w: -1 (yield scende = flight to Treasury = bullish USD)
+  usa_world_relative: +1 (USA outperforma = stress esterno)
+  RAZIONALE: il dollaro è safe haven quando lo stress è globale ma esterno agli USA,
+  o quando c'è crisi di funding in dollari (Avdjiev et al. 2019)
+
+SUB-SCORE GOLD (media di signed z-scores):
+  real_yield_proxy_chg4w: -1 (tassi reali che scendono → gold sale)
+  dxy_chg4w: -1 (dollaro debole → gold sale, relazione storica -0.4/-0.5)
+  jpy_strength: +1 (yen forte = risk-off non-USD)
+  equity_bond_corr_13w: +1 (correlazione equity-bond positiva = diversificazione fallisce → serve third leg)
+  gold_oil_ratio_chg4w: +1 (gold outperforma oil = flight to quality)
+  RAZIONALE: gold quando stress ha componente monetaria/inflattiva o il dollaro stesso
+  è il problema (Baur & Lucey 2010, Erb & Harvey 2013)
+
+SUB-SCORE MBS (binario rule-based):
+  ATTIVO se: VIX ∈ [20,28] AND term_spread > 0 AND drawdown ∈ [-12%, -5%]
+  BLOCCATO se: VIX > 30 OR libor_3m_spread > p90_dev OR hy_ig_spread_chg4w > 50bps
+  RAZIONALE: MBS NON è rifugio per crisi acute — è carry difensivo per stress moderato.
+  In crisi di liquidità (marzo 2020) lo spread MBS-Treasury esplode.
+  La soglia alta e il filtro di blocco sono intenzionalmente conservativi per i costi
+  di transazione alti (20bps). (Diep et al. 2021)
+
+DECISION MATRIX (priorità dall'alto al basso):
+  Se ensemble = 0 (risk-on) → LEVERED_EQUITY (1.5x equity, -0.5x cash)
+  Se ensemble = 1 AND sub_usd > τ_usd AND dxy_chg4w > 0 → CASH_USD
+  Else if sub_oro > τ_oro → GOLD
+  Else if sub_mbs = 1 → MBS
+  Else → CASH_USD (default sicuro)
+
+  Il default è SEMPRE cash — l'opzione a costo zero che non sbaglia costosamente.
+
+THRESHOLD OPTIMIZATION:
+  Grid search: τ_usd ∈ {0.5, 0.75, 1.0, 1.25, 1.5, 2.0} × τ_oro ∈ {0.5, 0.75, 1.0, 1.25, 1.5}
+  Per ogni combinazione: backtest su ogni fold di validazione
+  Metrica: Calmar ratio (CAGR / |MaxDD|) pesato per durata del fold
+  Risultato: τ_usd = 1.0, τ_oro = 0.5
+  La soglia gold è più bassa perché i segnali gold sono meno frequenti ma più persistenti.
+  NOTA: solo 2 parametri scalari ottimizzati, il resto è rule-based → basso rischio overfitting.
+
+FIGURA DA USARE: fig_calmar_heatmap.png (heatmap grid search τ_usd × τ_oro)
+FIGURA DA USARE: fig_subscores.png (timeline 3 pannelli: USD/Gold/MBS score con shading risk-off)
+
+================================================================================
+BACKTEST (Prompt 10)
+================================================================================
+
+ASSET ALLOCATION WEIGHTS:
+  LEVERED_EQUITY: 1.5x MXUS equity, -0.5x cash (posizione corta su cash per finanziare leva)
+  CASH_USD: 1.0x cash (accrual settimanale da USGG3M/52)
+  GOLD: 1.0x XAUBGNL
+  MBS: 1.0x LUMSTRUU (total return index)
+
+TRANSACTION COSTS (differenziati, realistici):
+  LEVERED_EQUITY: 5 bps per switch
+  CASH_USD: 2 bps
+  GOLD: 8 bps (futures/ETF)
+  MBS: 20 bps (mercato OTC, illiquido in stress)
+  I costi sono sottratti dal return settimanale ogni volta che il regime cambia.
+
+BENCHMARKS:
+  60/40: 60% MXUS + 40% LUACTRUU, ribilanciato settimanalmente
+  Buy & Hold: 100% MXUS
+
+RISULTATI SU TEST HOLDOUT SIGILLATO (2019-2021):
+                    Strategy    60/40       Buy&Hold
+  CAGR              35.22%      18.05%      24.24%
+  Sharpe Ratio      1.928       1.438       1.378
+  Max Drawdown     -12.07%     -21.47%     -27.72%
+  Calmar Ratio      2.917       0.841       0.874
+  Sortino Ratio     2.096       ---         ---
+  Turnover          3.9/anno    ---         ---
+  TC cumulati       0.54 bps    ---         ---
+
+ALLOCAZIONE NEL TEST:
+  Levered Equity: 103 settimane (85.8%)
+  Gold: 8 settimane (6.7%)
+  Cash USD: 8 settimane (6.7%)
+  MBS: 1 settimana (0.8%)
+
+INTERPRETAZIONE:
+La leva genera alpha nei 103 settimane calm (1.5x sull'equity che sale).
+L'EWS limita il drawdown a -12.1% vs -27.7% del buy-and-hold.
+Questa è esattamente la tesi: LEVA + EARLY WARNING = SHARPE SUPERIORE.
+Il turnover è contenuto (3.9 switch/anno) → i costi di transazione sono trascurabili (0.54bps).
+
+FIGURA DA USARE: fig_equity_curves.png (equity curve strategy vs 60/40 vs B&H + drawdown + regime shading)
+
+================================================================================
+COVID STRESS TEST (Prompt 11)
+================================================================================
+
+3 FINESTRE ANALIZZATE:
+
+1. COVID CRASH (15 Feb - 15 Apr 2020):
+   - Il VIX esplode sopra 80, MXUS crolla ~35%
+   - L'ensemble segnala risk-off
+   - I TRIGGER USD si attivano per primi: funding stress (LIBOR-3M spread si allarga),
+     DXY rally (dollaro forte), VRP esplode (paura implicita >> realizzata)
+   - Il routing manda verso CASH USD e GOLD
+   - MBS è CORRETTAMENTE BLOCCATO dal filtro VIX > 30
+   - Questo è il comportamento atteso: marzo 2020 è una crisi di funding in dollari,
+     il dollaro è il safe haven
+
+2. COVID RECOVERY (15 Apr - 31 Dec 2020):
+   - I segnali risk-off svaniscono man mano che i mercati si stabilizzano
+   - Il sistema torna a 1.5x EQUITY, catturando il rimbalzo a V
+   - Il gold sub-score resta elevato (stimulus fiscale → aspettative inflattive)
+     ma non abbastanza da superare la soglia con ensemble risk-on
+
+3. REFLATION / EARLY 2021 (1 Gen - 20 Apr 2021):
+   - Piena esposizione equity mantenuta
+   - NESSUN falso allarme durante il rally da riapertura
+   - Il sistema non si fa ingannare dalla volatilità di mercato normale
+
+FIGURA DA USARE: fig_stress_timeline.png (zoom 2020-2021 normalizzato con regime shading)
+FIGURA DA USARE: fig_covid_triggers.png (bar chart z-scores trigger + allocation breakdown per finestra)
+
+================================================================================
+LIMITATIONS (da presentare ONESTAMENTE)
+================================================================================
+
+1. TEST PERIOD CORTO: solo 120 settimane con 9 regime switch.
+   I risultati dipendono da pochi trade. Non statisticamente robusto.
+
+2. THIN FOLDS: fold 3-5 hanno 2-10 positivi. Il weighting per n_pos mitiga
+   ma non elimina il rumore nelle metriche CV per-fold.
+
+3. PROXY: MXUS ≠ MSCI World (single name vs global index);
+   log price ratios ≠ veri credit spread OAS.
+
+4. FREQUENZA SETTIMANALE: manca la volatilità intra-settimana.
+   In produzione servirebbe almeno daily.
+
+5. ASSENTE IL 2022: il regime inflation/rate shock — il vero test per il routing
+   Gold (correlazione equity-bond positiva, tassi reali in salita) — non è nei dati.
+
+6. RECALL GAP: al 1.5x, il sistema manca circa il 35% degli episodi risk-off.
+   Questo è un rischio genuino. Un missed crisis a 1.5x fa molto più male che a 1.0x.
+
+================================================================================
+RIFERIMENTI BIBLIOGRAFICI DA CITARE
+================================================================================
+
+- Maggiori, Neiman, Schreger (2020) — "International Currencies and Capital Allocation"
+  → sulla dominanza globale del dollaro come safe asset
+- Baur & Lucey (2010) — "Is Gold a Hedge or a Safe Haven?"
+  → framework per gold come rifugio vs hedge
+- Avdjiev, Du, Koch, Shin (2019) — "The Dollar, Bank Leverage, and Real Economic Activity"
+  → triangolo dollaro-leverage-flussi, dollar funding squeeze
+- Erb & Harvey (2013) — "The Golden Dilemma"
+  → gold e tassi reali
+- Diep, Eisfeldt, Richardson (2021) — su microstruttura MBS e prepayment risk
+- Adrian, Crump, Moench (2013) — term premium e segnali di tasso
+- Ledoit & Wolf (2004) — "A well-conditioned estimator for large-dimensional covariance matrices"
+
+================================================================================
+STRUTTURA SLIDE SUGGERITA (15 slide)
+================================================================================
+
+PRESENTATION (slide 1-3):
+  1. COVER: logo grande, titolo, nomi, corso
+  2. PROBLEM STATEMENT: gap letteratura + investment thesis leva 1.5x
+  3. DATASET: tabella asset class, fig_y_distribution, proxy choices
+
+BUSINESS LOGIC (slide 4-5):
+  4. TRE DOMINI MACRO: USD/Gold/MBS, trigger con segni e razionale economico
+  5. DECISION MATRIX + ROUTING: matrice allocazione, formula sub-score, fig_calmar_heatmap
+
+PROCESS & EXECUTION (slide 6-15):
+  6. FEATURE ENGINEERING: stationarity + spreads + fig_routing_corr
+  7. WALK-FORWARD CV: embargo 4w, fold table, n_pos weighting, scaler discipline
+  8. 4 MODELLI: MVG (Ledoit-Wolf spiegato), SVM, AE (con fig_ae_training), IF
+  9. MODEL RESULTS: tabella metriche + fig_mvg_scores
+  10. ENSEMBLE: percentile mapping, 3 varianti, tabella + fig_error_corr
+  11. ENSEMBLE TIMELINE: fig_ensemble_timeline (quasi full-slide)
+  12. BACKTEST: fig_equity_curves + tabella metriche + allocation breakdown
+  13. COVID STRESS TEST: fig_stress_timeline + fig_covid_triggers + narrative per finestra
+  14. SUB-SCORE DYNAMICS: fig_subscores + interpretazione per dominio
+  15. LIMITATIONS & CONCLUSIONS + FUTURE WORK
+
+================================================================================
+NOTE FINALI PER CHI COSTRUISCE LE SLIDE
+================================================================================
+
+- Ogni scelta tecnica ha un razionale MACRO o STATISTICO. Non è arbitraria.
+  Le slide devono MOSTRARE questo razionale, non solo il risultato.
+- Le tabelle dei risultati sono importanti: mettile con i numeri esatti.
+- Il professore vuole la struttura: Presentation → Business Logic → Process & Execution.
+- I grafici sono pronti in slide_assets/ — sono ad alta risoluzione (250 DPI).
+- Non serve inventare nulla: tutti i dati, scelte, e risultati sono in questo documento.
