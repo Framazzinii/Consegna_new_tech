@@ -7,3 +7,10 @@ venv/
 dist/
 build/
 .env
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.synctex.gz
