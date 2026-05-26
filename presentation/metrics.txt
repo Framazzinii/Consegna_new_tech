@@ -1,0 +1,14 @@
+CAGR=35.22%
+Sharpe=1.928
+MaxDD=-12.07%
+Calmar=2.917
+Sortino=2.096
+Turnover=3.9
+best_ens=Soft Mean
+best_ens_f1=0.650
+best_thresh={'usd': 1.0, 'oro': 0.5}
+alloc={'LEVERED_EQUITY': 103, 'GOLD': 8, 'CASH_USD': 8, 'MBS': 1}
+b60_cagr=18.05%
+b60_dd=-21.47%
+bh_cagr=24.24%
+bh_dd=-27.72%
